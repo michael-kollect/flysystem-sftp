@@ -1,25 +1,21 @@
 <?php
 
-namespace League\Flysystem\Sftp;
+namespace KollectSystems\SFTP;
 
+use Crypt_RSA;
 use InvalidArgumentException;
 use League\Flysystem\Adapter\AbstractFtpAdapter;
 use League\Flysystem\Adapter\Polyfill\StreamedCopyTrait;
 use League\Flysystem\AdapterInterface;
 use League\Flysystem\Config;
 use League\Flysystem\Util;
-use phpseclib\Crypt\RSA;
-use phpseclib\Net\SFTP;
-use phpseclib\System\SSH\Agent;
+use LogicException;
+use Net_SFTP;
+use RuntimeException;
 
 class SftpAdapter extends AbstractFtpAdapter
 {
     use StreamedCopyTrait;
-
-    /**
-     * @var SFTP
-     */
-    protected $connection;
 
     /**
      * @var int
@@ -29,27 +25,12 @@ class SftpAdapter extends AbstractFtpAdapter
     /**
      * @var string
      */
-    protected $hostFingerprint;
-
-    /**
-     * @var string
-     */
-    protected $privateKey;
-
-    /**
-     * @var bool
-     */
-    protected $useAgent = false;
-
-    /**
-     * @var Agent
-     */
-    private $agent;
+    protected $privatekey;
 
     /**
      * @var array
      */
-    protected $configurable = ['host', 'hostFingerprint', 'port', 'username', 'password', 'useAgent', 'agent', 'timeout', 'root', 'privateKey', 'passphrase', 'permPrivate', 'permPublic', 'directoryPerm', 'NetSftpConnection'];
+    protected $configurable = ['host', 'port', 'username', 'password', 'timeout', 'root', 'privateKey', 'permPrivate', 'permPublic', 'directoryPerm'];
 
     /**
      * @var array
@@ -60,11 +41,6 @@ class SftpAdapter extends AbstractFtpAdapter
      * @var int
      */
     protected $directoryPerm = 0744;
-
-    /**
-     * @var string
-     */
-    private $passphrase;
 
     /**
      * Prefix a path.
@@ -79,23 +55,6 @@ class SftpAdapter extends AbstractFtpAdapter
     }
 
     /**
-     * Set the finger print of the public key of the host you are connecting to.
-     *
-     * If the key does not match the server identification, the connection will
-     * be aborted.
-     *
-     * @param string $fingerprint Example: '88:76:75:96:c1:26:7c:dd:9f:87:50:db:ac:c4:a8:7c'.
-     *
-     * @return $this
-     */
-    public function setHostFingerprint($fingerprint)
-    {
-        $this->hostFingerprint = $fingerprint;
-
-        return $this;
-    }
-
-    /**
      * Set the private key (string or path to local file).
      *
      * @param string $key
@@ -104,45 +63,7 @@ class SftpAdapter extends AbstractFtpAdapter
      */
     public function setPrivateKey($key)
     {
-        $this->privateKey = $key;
-
-        return $this;
-    }
-
-    /**
-     * Set the passphrase for the privatekey.
-     *
-     * @param string $passphrase
-     *
-     * @return $this
-     */
-    public function setPassphrase($passphrase)
-    {
-        $this->passphrase = $passphrase;
-
-        return $this;
-    }
-
-    /**
-     * @param boolean $useAgent
-     *
-     * @return $this
-     */
-    public function setUseAgent($useAgent)
-    {
-        $this->useAgent = (bool) $useAgent;
-
-        return $this;
-    }
-
-    /**
-     * @param Agent $agent
-     *
-     * @return $this
-     */
-    public function setAgent(Agent $agent)
-    {
-        $this->agent = $agent;
+        $this->privatekey = $key;
 
         return $this;
     }
@@ -172,13 +93,13 @@ class SftpAdapter extends AbstractFtpAdapter
     }
 
     /**
-     * Inject the SFTP instance.
+     * Inject the Net_SFTP instance.
      *
-     * @param SFTP $connection
+     * @param Net_SFTP $connection
      *
      * @return $this
      */
-    public function setNetSftpConnection(SFTP $connection)
+    public function setNetSftpConnection(Net_SFTP $connection)
     {
         $this->connection = $connection;
 
@@ -190,8 +111,7 @@ class SftpAdapter extends AbstractFtpAdapter
      */
     public function connect()
     {
-        $this->connection = $this->connection ?: new SFTP($this->host, $this->port, $this->timeout);
-        $this->connection->disableStatCache();
+        $this->connection = $this->connection ?: new Net_SFTP($this->host, $this->port, $this->timeout);
         $this->login();
         $this->setConnectionRoot();
     }
@@ -199,61 +119,20 @@ class SftpAdapter extends AbstractFtpAdapter
     /**
      * Login.
      *
-     * @throws ConnectionErrorException
+     * @throws LogicException
      */
     protected function login()
     {
-        if ($this->hostFingerprint) {
-            $publicKey = $this->connection->getServerPublicHostKey();
-
-            if ($publicKey === false) {
-                throw new ConnectionErrorException('Could not connect to server to verify public key.');
-            }
-
-            $actualFingerprint = $this->getHexFingerprintFromSshPublicKey($publicKey);
-
-            if (0 !== strcasecmp($this->hostFingerprint, $actualFingerprint)) {
-                throw new ConnectionErrorException('The authenticity of host '.$this->host.' can\'t be established.');
-            }
+        $this->username = 'local.kollect';
+        //$this->password = '(KoLLect4321)';
+        if (! $this->connection->login($this->username, $this->getPassword())) {
+        //if (! $this->connection->login($this->username, $this->password)) {
+            throw new LogicException('Could not login with username: '.$this->username.', host: '.$this->host);
         }
-
-        $authentication = $this->getAuthentication();
-
-
-        if ($this->connection->login($this->getUsername(), $authentication)) {
-            goto past_login;
-        }
-
-        // try double authentication, key is already given so now give password
-        if ($authentication instanceof RSA && $this->connection->login($this->getUsername(), $this->getPassword())) {
-            goto past_login;
-        }
-
-        throw new ConnectionErrorException('Could not login with username: '.$this->getUsername().', host: '.$this->host);
-
-        past_login:
-
-        if ($authentication instanceof Agent) {
-            $authentication->startSSHForwarding($this->connection);
-        }
-    }
-
-    /**
-     * Convert the SSH RSA public key into a hex formatted fingerprint.
-     *
-     * @param string $publickey
-     * @return string Hex formatted fingerprint, e.g. '88:76:75:96:c1:26:7c:dd:9f:87:50:db:ac:c4:a8:7c'.
-     */
-    private function getHexFingerprintFromSshPublicKey ($publickey)
-    {
-        $content = explode(' ', $publickey, 3);
-        return implode(':', str_split(md5(base64_decode($content[1])), 2));
     }
 
     /**
      * Set the connection root.
-     *
-     * @throws InvalidRootException
      */
     protected function setConnectionRoot()
     {
@@ -264,74 +143,44 @@ class SftpAdapter extends AbstractFtpAdapter
         }
 
         if (! $this->connection->chdir($root)) {
-            throw new InvalidRootException('Root is invalid or does not exist: '.$root);
+            throw new RuntimeException('Root is invalid or does not exist: '.$root);
         }
-
-        $this->setRoot($this->connection->pwd());
     }
 
     /**
      * Get the password, either the private key or a plain text password.
      *
-     * @return Agent|RSA|string
+     * @return Crypt_RSA|string
      */
-    public function getAuthentication()
+    public function getPassword()
     {
-        if ($this->useAgent) {
-            return $this->getAgent();
-        }
-
-        if ($this->privateKey) {
+        if ($this->privatekey) {
             return $this->getPrivateKey();
         }
 
-        return $this->getPassword();
+        return $this->password;
     }
 
     /**
-     * Get the private key with the password or private key contents.
+     * Get the private get with the password or private key contents.
      *
-     * @return RSA
+     * @return Crypt_RSA
      */
     public function getPrivateKey()
     {
-        if ("---" !== substr($this->privateKey, 0, 3) && is_file($this->privateKey)) {
-            $this->privateKey = file_get_contents($this->privateKey);
+        if (is_file($this->privatekey)) {
+            $this->privatekey = file_get_contents($this->privatekey);
         }
 
-        $key = new RSA();
+        $key = new Crypt_RSA();
 
-        if ($password = $this->getPassphrase()) {
-            $key->setPassword($password);
+        if ($this->password) {
+            $key->setPassword($this->password);
         }
 
-        $key->loadKey($this->privateKey);
+        $key->loadKey($this->privatekey);
 
         return $key;
-    }
-
-    /**
-     * @return string
-     */
-    public function getPassphrase()
-    {
-        if ($this->passphrase === null) {
-            //Added for backward compatibility
-            return $this->getPassword();
-        }
-        return $this->passphrase;
-    }
-
-    /**
-     * @return Agent|bool
-     */
-    public function getAgent()
-    {
-        if ( ! $this->agent instanceof Agent) {
-            $this->agent = new Agent();
-        }
-
-        return $this->agent;
     }
 
     /**
@@ -354,8 +203,6 @@ class SftpAdapter extends AbstractFtpAdapter
         }
 
         foreach ($listing as $filename => $object) {
-            // When directory entries have a numeric filename they are changed to int
-            $filename = (string) $filename;
             if (in_array($filename, ['.', '..'])) {
                 continue;
             }
@@ -363,7 +210,7 @@ class SftpAdapter extends AbstractFtpAdapter
             $path = empty($directory) ? $filename : ($directory.'/'.$filename);
             $result[] = $this->normalizeListingObject($path, $object);
 
-            if ($recursive && isset($object['type']) && $object['type'] === NET_SFTP_TYPE_DIRECTORY) {
+            if ($recursive && $object['type'] === NET_SFTP_TYPE_DIRECTORY) {
                 $result = array_merge($result, $this->listDirectoryContents($path));
             }
         }
@@ -382,8 +229,7 @@ class SftpAdapter extends AbstractFtpAdapter
     protected function normalizeListingObject($path, array $object)
     {
         $permissions = $this->normalizePermissions($object['permissions']);
-        $type = isset($object['type']) && ($object['type'] === 2) ?  'dir' : 'file';
-
+        $type = ($object['type'] === 1) ? 'file' : 'dir' ;
         $timestamp = $object['mtime'];
 
         if ($type === 'dir') {
@@ -413,7 +259,7 @@ class SftpAdapter extends AbstractFtpAdapter
             return false;
         }
 
-        return compact('contents', 'path');
+        return compact('contents', 'visibility', 'path');
     }
 
     /**
@@ -425,7 +271,7 @@ class SftpAdapter extends AbstractFtpAdapter
             return false;
         }
 
-        return compact('path');
+        return compact('visibility', 'path');
     }
 
     /**
@@ -442,7 +288,7 @@ class SftpAdapter extends AbstractFtpAdapter
         $this->ensureDirectory(Util::dirname($path));
         $config = Util::ensureConfig($config);
 
-        if (! $connection->put($path, $contents, SFTP::SOURCE_STRING)) {
+        if (! $connection->put($path, $contents, NET_SFTP_STRING)) {
             return false;
         }
 
@@ -464,7 +310,7 @@ class SftpAdapter extends AbstractFtpAdapter
             return false;
         }
 
-        return compact('contents', 'path');
+        return compact('contents');
     }
 
     /**
@@ -482,7 +328,7 @@ class SftpAdapter extends AbstractFtpAdapter
 
         rewind($stream);
 
-        return compact('stream', 'path');
+        return compact('stream');
     }
 
     /**
@@ -623,7 +469,7 @@ class SftpAdapter extends AbstractFtpAdapter
      */
     public function isConnected()
     {
-        if ($this->connection instanceof SFTP && $this->connection->isConnected()) {
+        if ($this->connection instanceof Net_SFTP && $this->connection->isConnected()) {
             return true;
         }
 
