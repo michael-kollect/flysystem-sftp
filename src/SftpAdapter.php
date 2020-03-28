@@ -1,6 +1,6 @@
 <?php
 
-namespace KollectSystems\SFTP;
+namespace League\Flysystem\Sftp;
 
 use Crypt_RSA;
 use InvalidArgumentException;
