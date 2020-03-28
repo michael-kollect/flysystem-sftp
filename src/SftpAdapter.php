@@ -123,9 +123,9 @@ class SftpAdapter extends AbstractFtpAdapter
      */
     protected function login()
     {
-        $this->username = 'local.kollect';
-        //$this->password = '(KoLLect4321)';
-        if (! $this->connection->login($this->username, $this->getPassword())) {
+        $this->username = env('SFTP_USERNAME','nobody');
+        $this->password = env('SFTP_PASSWORD','secret');
+        if (! $this->connection->login($this->username, $this->password)) {
         //if (! $this->connection->login($this->username, $this->password)) {
             throw new LogicException('Could not login with username: '.$this->username.', host: '.$this->host);
         }
